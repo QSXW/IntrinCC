@@ -21,6 +21,7 @@ let sources = ['intrin.h', 'xmmintrin.h', 'zmmintrin.h', 'immintrin.h'];
 for (s in sources) {
     source.load(`${path}/${sources[s]}`);
 }
+
 function levelDown(mmType) {
     let chain = {     
          '__m512' :  '__m256',
@@ -35,6 +36,26 @@ function levelDown(mmType) {
     };
 
     return chain[mmType];
+}
+
+let __m128Set = new Set(['__m128', '__m128i', '__m128d']);
+function is__m128(type) {
+    return __m128Set.hasValue(type);
+}
+
+let __m256Set = new Set(['__m256', '__m256i', '__m256d']);
+function is__m256(type) {
+    return __m256Set.has(type);
+}
+
+let __m512Set = new Set(['__m512', '__m512i', '__m512d']);
+function is__m512(type) {
+    return __m512Set.has(type);
+}
+
+let __m64Set = new Set(['uint64_t', 'int64_t', '__m64']);
+function is__m64(type) {
+    return __m64Set.has(type);
 }
 
 function hasEntry(entry) {
@@ -146,7 +167,8 @@ class CPPParam {
 }
 
 class CPPFunction {
-    constructor(funcName, ret = '', params=[], qualifiers=[], initializer_list=null) {
+    constructor(funcName, ret = '', params=[], qualifiers=[], initializer_list=null, indent='    ', preQualifiers=null) {
+        this.indent = indent;
         // generate prologue
         if (ret == undefined) {
             let i = 0;
@@ -154,7 +176,7 @@ class CPPFunction {
         if (ret) {
             ret += ' ';
         }
-        this.body = `    ${ret}${funcName}(${params.join(', ')})`;
+        this.body = `${this.indent}${preQualifiers ? `${preQualifiers.join(' ')} ` : ''}${ret}${funcName}(${params.join(', ')})`;
 
         if (initializer_list) {
             this.body += ` ${qualifiers.join(' ')} :\n        ${initializer_list.join(',\n    ')}\n`;
@@ -170,19 +192,19 @@ class CPPFunction {
      * @param {*} line 
      */
     S(line) {
-        this.body += `        ${line};\n`;
+        this.body += `${this.indent}    ${line};\n`;
     }
 
     L(line) {
-        this.body += `        ${line}\n`;
+        this.body += `${this.indent}    ${line}\n`;
     }
 
     BB() {
-        this.body += '    {\n';
+        this.body += `${this.indent}{\n`;
     }
 
     EB() {
-        this.body += '    }\n\n';
+        this.body += `${this.indent}}\n`;
     }
 
     toString() {
@@ -239,17 +261,30 @@ class CPPCLASS {
             `const ${this.name} &other`
         ];
 
-        let f = new CPPFunction(`operator${tokens[operation]}`, `${this.name} &`, params, ['noexcept']);
-        f.S(`${entry}(this->v, other.v)`);
-        f.S(`return *this`);
+        let f = new CPPFunction(`operator${tokens[operation]}`, `${this.name} `, params, ['noexcept']);
+        f.S(`return ${entry}(this->v, other.v)`);
 
         return f;
+    }
+
+    getSetEntry(name) {
+        let suffix = '';
+        if (!is__m512(this.mmType) && is__m64(this.cType)) {
+            suffix = 'x';
+        }
+        
+        let entry = `${this.funcType}_${name}_${this.suffix}${suffix}`;
+        return entry;
+    }
+
+    getEntry(name) {
+        return `${this.funcType}_${name}_${this.suffix}`;
     }
 
     generate() {
         let functionList = {
             valueType: () => {
-                return `    using value_type = ${this.mmType};\n\n`;
+                return `    using value_type = ${this.mmType};\n`;
             },
 
             defaultConstructor: () => {      
@@ -261,16 +296,36 @@ class CPPCLASS {
             },
 
             set1 : () => {
-                let entry = `${this.funcType}_set1_${this.suffix}`;
+                let entry = this.getSetEntry('set1');
                 if (hasEntry(entry)) {
                     let list = [
                         `v{ ${entry}(value) }`,
                     ];
-    
                     let params = [
                         `${this.cType} value`, 
                     ];
         
+                    return new CPPFunction(this.name, '', params, ['noexcept'], list);
+                }
+            },
+
+            set: () => {
+                let entry = this.getSetEntry('set');
+                if (hasEntry(entry)) {
+                    let args = [];
+                    for (let i = 0; i < this.size; i++) {
+                        args.push(`_${i}`);
+                    }
+
+                    let list = [
+                        `v{ ${entry}(${args.join(', ')}) }`,
+                    ];
+
+                    let params = [];
+                    for (let a in args) {
+                        params.push(`${this.cType} ${args[a]}`);
+                    }
+                            
                     return new CPPFunction(this.name, '', params, ['noexcept'], list);
                 }
             },
@@ -361,10 +416,10 @@ class CPPCLASS {
             }
         };
 
-        let str = `class ${this.name}\n{\n`;
+        let str = `struct ${this.name}\n{\n`;
         str += `public:\n@`;
-        str += `private:\n    ${this.mmType} v;\n`;
-        str += `};\n\n`;
+        str += `public:\n    ${this.mmType} v;\n`;
+        str += `};\n`;
 
         let text = '';
         for (let f in functionList) {
@@ -372,12 +427,53 @@ class CPPCLASS {
             if (cppFunc == undefined) {
                 continue;
             }
-            text += functionList[f]();
+            text += functionList[f]() + '\n';
         }
 
         return str.replace('@', text);
     }
 }
+
+let n2a = ['a', 'b', 'c', 'd', 'e', 'f'];
+function genMath(klass, name, count) {
+    let entry = klass.getEntry(name);
+    if (hasEntry(entry)) {
+        let args = [];
+        for (let i = 0; i < count; i++) {
+            args.push(n2a[i]);
+        }
+
+        let params = [];
+        for (let a in args) {
+            params.push(`const ${klass.name} &${args[a]}`);
+        }
+        let f = new CPPFunction(name, `${klass.name}`, params, ['noexcept'], null, '', ['static', 'inline']);
+        f.S(`return ${entry}(${args.join(', ')})`);
+        return f;
+    }
+}
+
+function genPow(klass) {
+    return genMath(klass, 'pow', 2);
+}
+
+function genSin(klass) {
+    return genMath(klass, 'sin', 1);
+}
+
+function genCos(klass) {
+    return genMath(klass, 'cos', 1);
+}
+
+function genASin(klass) {
+    return genMath(klass, 'asin', 1);
+}
+
+
+function genACos(klass) {
+    return genMath(klass, 'acos', 1);
+}
+
 
 class CPPFile {
     constructor(name) {
@@ -387,14 +483,30 @@ class CPPFile {
 
     Include(file, property) {
         if (property == 'internal') {
-            this.body += `#include "${file}"\n\n`;
+            this.body += `#include "${file}"\n`;
         } else if(property == 'external') {
-            this.body += `#include <${file}>\n\n`;
+            this.body += `#include <${file}>\n`;
         }
     }
 
-    addClass(c) {
-        this.body += c;
+    add(c) {
+        this.body += `\n${c}`;
+    }
+}
+
+class CPPConcept {
+    constructor(type) {
+        this.type = type;
+        this.conetent = `template <class T>\nconcept ${type} = requires{\n@};`;
+        this.body = '';
+    }
+
+    constraint(statement, constraintExpression) {
+        this.body += `    {${statement}} -> ${constraintExpression};\n`;
+    }
+
+    toString() {
+        return this.conetent.replace('@',  this.body);
     }
 }
 
@@ -402,31 +514,66 @@ let classes = [
     new CPPCLASS( '__m128',    'float',  'FLOAT'),
     new CPPCLASS( '__m256',    'float',  'FLOAT'),
     new CPPCLASS( '__m512',    'float',  'FLOAT'),
+    new CPPCLASS('__m128d',   'double', 'DOUBLE'),
+    new CPPCLASS('__m256d',   'double', 'DOUBLE'),
+    new CPPCLASS('__m512d',   'double', 'DOUBLE'),
     new CPPCLASS('__m128i',   'int8_t',   'INT8'),
     new CPPCLASS('__m128i',  'uint8_t',  'UINT8'),
     new CPPCLASS('__m128i',  'int16_t',  'INT16'),
     new CPPCLASS('__m128i', 'uint16_t', 'UINT16'),
     new CPPCLASS('__m128i',  'int32_t',  'INT32'),
     new CPPCLASS('__m128i', 'uint32_t', 'UINT32'),
+    new CPPCLASS('__m128i',  'int64_t',  'INT64'),
+    new CPPCLASS('__m128i', 'uint64_t', 'UINT64'),
     new CPPCLASS('__m256i',   'int8_t',   'INT8'),
     new CPPCLASS('__m256i',  'uint8_t',  'UINT8'),
     new CPPCLASS('__m256i',  'int16_t',  'INT16'),
     new CPPCLASS('__m256i', 'uint16_t', 'UINT16'),
     new CPPCLASS('__m256i',  'int32_t',  'INT32'),
     new CPPCLASS('__m256i', 'uint32_t', 'UINT32'),
+    new CPPCLASS('__m256i',  'int64_t',  'INT64'),
+    new CPPCLASS('__m256i', 'uint64_t', 'UINT64'),
     new CPPCLASS('__m512i',   'int8_t',   'INT8'),
     new CPPCLASS('__m512i',  'uint8_t',  'UINT8'),
     new CPPCLASS('__m512i',  'int16_t',  'INT16'),
     new CPPCLASS('__m512i', 'uint16_t', 'UINT16'),
     new CPPCLASS('__m512i',  'int32_t',  'INT32'),
     new CPPCLASS('__m512i', 'uint32_t', 'UINT32'),
+    new CPPCLASS('__m512i',  'int64_t',  'INT64'),
+    new CPPCLASS('__m512i', 'uint64_t', 'UINT64'),
 ];
 
 let cpp = new CPPFile('../slimmintrin.h');
+cpp.Include('cstdint', 'external');
+cpp.Include('concepts', 'external');
 cpp.Include('immintrin.h', 'external');
 
 for (c in classes) {
-    cpp.addClass(classes[c].generate());
+    cpp.add(classes[c].generate());
 }
+
+let concept = new CPPConcept('IntrinsicType');
+for (let c in classes)  {
+    concept.constraint('T{}', `std::convertible_to<${classes[c].name}>`);
+}
+
+let statics = [
+    { func:  genPow, limit: (klass) => { return klass.cType == 'float'; } },
+    { func:  genSin, limit: (klass) => { return klass.cType == 'float'; } },
+    { func:  genCos, limit: (klass) => { return klass.cType == 'float'; } },
+    { func: genASin, limit: (klass) => { return klass.cType == 'float'; } },
+    { func: genACos, limit: (klass) => { return klass.cType == 'float'; } },
+];
+
+for (let c in classes)  {
+    let klass = classes[c];
+    for (let s in statics) {
+        if (statics[s].limit(klass)) {
+            cpp.add(statics[s].func(klass));
+        }
+    }
+}
+
+cpp.add(concept);
 
 let f = fs.writeFileSync(cpp.name, cpp.body);
