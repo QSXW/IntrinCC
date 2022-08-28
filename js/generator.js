@@ -159,11 +159,23 @@ function getSuffix(mmType, cType) {
     return suffixes[mmType][cType];
 }
 
-class CPPParam {
-    constructor(type, name) {
-        this.type = type,
-        this.name = name
+let n2a = ['a', 'b', 'c', 'd', 'e', 'f'];
+
+function getParamsList(type, count) {
+    let args = [];
+    for (let i = 0; i < count; i++) {
+        args.push(n2a[i]);
     }
+
+    let params = [];
+    for (let a in args) {
+        params.push(`${type}${args[a]}`);
+    }
+
+    return {
+        'args': args,
+        'params': params
+    };
 }
 
 class CPPFunction {
@@ -313,7 +325,7 @@ class CPPCLASS {
                 let entry = this.getSetEntry('set');
                 if (hasEntry(entry)) {
                     let args = [];
-                    for (let i = 0; i < this.size; i++) {
+                    for (let i = this.size - 1; i >= 0; i--) {
                         args.push(`_${i}`);
                     }
 
@@ -322,7 +334,7 @@ class CPPCLASS {
                     ];
 
                     let params = [];
-                    for (let a in args) {
+                    for (let a in args.reverse()) {
                         params.push(`${this.cType} ${args[a]}`);
                     }
                             
@@ -413,7 +425,82 @@ class CPPCLASS {
                         return f;
                     }
                 }
-            }
+            },
+
+            toUint32: () => {
+                if (this.suffix == 'ps') {
+                    let entry = `${this.funcType}_cvt${this.suffix}_epi32`;
+                    if (hasEntry(entry)) {
+                        let f = new CPPFunction('cvt2int32', `${this.mmType}i`, [], ['const', 'noexcept']);
+                        f.S(`return ${entry}(v)`);
+                        return f;
+                    }
+                }
+            },
+
+            fmadd: () => {
+                if (this.suffix == 'ps') {
+                    let entry = `${this.funcType}_fmadd_${this.suffix}`;
+                    if (hasEntry(entry)) {
+                        let ret = getParamsList(`const ${this.name} &`, 2);
+                        let f = new CPPFunction('fmadd', `${this.name}`, ret.params, ['const', 'noexcept']);
+                        f.S(`return ${entry}(v, ${ret.args.join(', ')})`);
+                        return f;
+                    }
+                }
+            },
+
+            shuffle: () => {
+                if (this.suffix == 'ps' || this.suffix == 'pd') {
+                    let entry = `${this.funcType}_shuffle_${this.suffix}`;
+                    if (hasEntry(entry)) {
+                        let f = new CPPFunction('shuffle', `template <int imm8>\n    ${this.name}`, [`const ${this.name} &a`], ['const', 'noexcept']);
+                        f.S(`return ${entry}(v, a, imm8)`);
+                        return f;
+                    }
+                }
+            },
+
+            round: () => {
+                if (this.suffix == 'ps' || this.suffix == 'pd') {
+                    let entry = `${this.funcType}_round_${this.suffix}`;
+                    if (hasEntry(entry)) {
+                        let f = new CPPFunction('round', `template <int rounding>\n    ${this.name}`, [], ['const', 'noexcept']);
+                        f.S(`return ${entry}(v, rounding)`);
+                        return f;
+                    }
+                }
+            },
+
+            floor: () => {
+                if (this.suffix == 'ps' || this.suffix == 'pd') {
+                    let entry = `${this.funcType}_floor_${this.suffix}`;
+                    if (hasEntry(entry)) {
+                        let f = new CPPFunction('floor', `${this.name}`, [], ['const', 'noexcept']);
+                        f.S(`return ${entry}(v)`);
+                        return f;
+                    } else {
+                        let f = new CPPFunction('floor', `${this.name}`, [], ['const', 'noexcept']);
+                        f.S(`return round<_MM_FROUND_FLOOR>()`);
+                        return f;
+                    }
+                }
+            },
+
+            ceil: () => {
+                if (this.suffix == 'ps' || this.suffix == 'pd') {
+                    let entry = `${this.funcType}_ceil_${this.suffix}`;
+                    if (hasEntry(entry)) {
+                        let f = new CPPFunction('ceil', `${this.name}`, [], ['const', 'noexcept']);
+                        f.S(`return ${entry}(v)`);
+                        return f;
+                    } else {
+                        let f = new CPPFunction('ceil', `${this.name}`, [], ['const', 'noexcept']);
+                        f.S(`return round<_MM_FROUND_CEIL>()`);
+                        return f;
+                    }
+                }
+            },
         };
 
         let str = `struct ${this.name}\n{\n`;
@@ -434,21 +521,12 @@ class CPPCLASS {
     }
 }
 
-let n2a = ['a', 'b', 'c', 'd', 'e', 'f'];
 function genMath(klass, name, count) {
     let entry = klass.getEntry(name);
     if (hasEntry(entry)) {
-        let args = [];
-        for (let i = 0; i < count; i++) {
-            args.push(n2a[i]);
-        }
-
-        let params = [];
-        for (let a in args) {
-            params.push(`const ${klass.name} &${args[a]}`);
-        }
-        let f = new CPPFunction(name, `${klass.name}`, params, ['noexcept'], null, '', ['static', 'inline']);
-        f.S(`return ${entry}(${args.join(', ')})`);
+        let ret = getParamsList(`const ${klass.name} &`, count);
+        let f = new CPPFunction(name, `${klass.name}`, ret.params, ['noexcept'], null, '', ['static', 'inline']);
+        f.S(`return ${entry}(${ret.args.join(', ')})`);
         return f;
     }
 }
@@ -469,11 +547,17 @@ function genASin(klass) {
     return genMath(klass, 'asin', 1);
 }
 
-
 function genACos(klass) {
     return genMath(klass, 'acos', 1);
 }
 
+function genMax(klass) {
+    return genMath(klass, 'max', 2);
+}
+
+function genMin(klass) {
+    return genMath(klass, 'min', 2);
+}
 
 class CPPFile {
     constructor(name) {
@@ -495,19 +579,43 @@ class CPPFile {
 }
 
 class CPPConcept {
-    constructor(type) {
+    constructor(type, requires=false) {
         this.type = type;
-        this.conetent = `template <class T>\nconcept ${type} = requires{\n@};`;
+        this.content = `template <class T>\nconcept ${type} = ${requires ? `requires{\n@};\n` : '(\n@\n);\n'}`;
         this.body = '';
     }
 
-    constraint(statement, constraintExpression) {
+    constraint(conditions, logic) {
+        let logicMap = {'or': '||', 'and': '&&'};
+        this.body += conditions.join(` ${logicMap[logic]}\n`);
+    }
+
+    require(statement, constraintExpression) {
         this.body += `    {${statement}} -> ${constraintExpression};\n`;
     }
 
     toString() {
-        return this.conetent.replace('@',  this.body);
+        return this.content.replace('@',  this.body);
     }
+}
+
+class CPPTemplate extends CPPFunction {
+    constructor(template, name, ret, params=[], qualifiers=[], preQualifiers=[]) {
+        super(name, ret, params, qualifiers, null, '', preQualifiers);
+        this.template = `template <${template} T>\n`;
+    }
+
+    toString() {
+        return `${this.template}${super.toString()}`;
+    }
+}
+
+function genTemplate(name, count, expression) {
+    params = getParamsList('const T &', count).params;
+    let template = new CPPTemplate('IntrinsicType', name, 'T', params, ['noexcept'], ['static', 'inline']);
+    template.S(expression);
+
+    return template;
 }
 
 let classes = [
@@ -553,9 +661,11 @@ for (c in classes) {
 }
 
 let concept = new CPPConcept('IntrinsicType');
+let conditions = [];
 for (let c in classes)  {
-    concept.constraint('T{}', `std::convertible_to<${classes[c].name}>`);
+    conditions.push(`    std::is_same_v<T, ${classes[c].name}>`);
 }
+concept.constraint(conditions, 'or');
 
 let statics = [
     { func:  genPow, limit: (klass) => { return klass.cType == 'float'; } },
@@ -563,6 +673,8 @@ let statics = [
     { func:  genCos, limit: (klass) => { return klass.cType == 'float'; } },
     { func: genASin, limit: (klass) => { return klass.cType == 'float'; } },
     { func: genACos, limit: (klass) => { return klass.cType == 'float'; } },
+    { func:  genMin, limit: (klass) => { return true; } },
+    { func:  genMax, limit: (klass) => { return true; } },
 ];
 
 for (let c in classes)  {
@@ -575,5 +687,6 @@ for (let c in classes)  {
 }
 
 cpp.add(concept);
+cpp.add(genTemplate('clip', 3, 'return min(max(a, b), c)'))
 
 let f = fs.writeFileSync(cpp.name, cpp.body);
